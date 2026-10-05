@@ -130,6 +130,9 @@ body.away #awayMask{display:grid}
 table.tb{width:100%;border-collapse:collapse;font-size:15px}
 .tb th,.tb td{border-bottom:1px solid var(--line);padding:6px 6px;text-align:left}
 .tbwrap{overflow-x:auto}
+.seg{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0 4px}
+.seg button{font-family:'Mali','Sarabun',sans-serif;font-weight:700;font-size:16px;padding:8px 14px;border-radius:999px;border:2px solid var(--line);background:var(--chip);color:var(--ink);cursor:pointer;min-height:44px}
+.seg button.on{background:var(--blue);border-color:var(--blue);color:#fff}
 .chips{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}
 .logline{font-size:14px;color:var(--ink2);border-bottom:1px dashed var(--line);padding:4px 0}
 .modal{display:none;position:fixed;inset:0;z-index:800;background:rgba(37,37,74,.75);place-items:center;padding:20px}
@@ -261,7 +264,7 @@ table.tb{width:100%;border-collapse:collapse;font-size:15px}
   </div>
   <div class="card">
     <h2 style="margin-top:0">โหมดครู: รวมคะแนนจากรหัสของนักเรียน</h2>
-    <p class="sub">วางรหัสที่ขึ้นต้นด้วย KTC3- ได้หลายรหัสพร้อมกัน (หนึ่งรหัสต่อหนึ่งบรรทัด) ระบบสะสมไว้ในเครื่องนี้ วางซ้ำได้ไม่ซ้ำแถว</p>
+    <p class="sub">วางรหัสที่ขึ้นต้นด้วย KTC3- ได้หลายรหัสพร้อมกัน (หนึ่งรหัสต่อหนึ่งบรรทัด) ระบบสะสมไว้ในเครื่องนี้ วางซ้ำได้ไม่ซ้ำแถว · รหัสรุ่นใหม่มีคะแนนแยกปรนัย/อัตนัย กดปุ่มด้านล่างเพื่อสลับมุมมอง</p>
     <textarea id="tCodes" rows="5" placeholder="KTC3-...."></textarea>
     <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn" id="btnProc">ประมวลผลคะแนน</button>
@@ -270,6 +273,7 @@ table.tb{width:100%;border-collapse:collapse;font-size:15px}
       <button class="btn sun" id="btnTBack">← กลับหน้าหลัก</button>
     </div>
     <div class="err" id="tMsg"></div>
+    <div class="seg" id="tSeg"><button type="button" data-v="all">📊 รวมทั้งหมด</button><button type="button" data-v="mc">📝 ปรนัย</button><button type="button" data-v="sub">✍️ อัตนัย</button></div>
     <div class="chips" id="tStats"></div>
     <div class="tbwrap"><table class="tb" id="tTable"></table></div>
   </div>
@@ -695,7 +699,7 @@ $('btnSeeScore').onclick=()=>{ resultFrom='done'; renderResult(lastAttempt); };
 
 function makeCode(a){
   const o={n:a.no,nm:a.name,sc:a.score,mx:a.max,pt:a.pct,ps:a.pass?1:0,tm:a.elapsed,ts:a.ts,to:a.timedOut?1:0,
-    v:[a.viol.leave,a.viol.overlay,a.viol.shot,a.viol.reload]};
+    v:[a.viol.leave,a.viol.overlay,a.viol.shot,a.viol.reload],m:[a.mcScore,a.clsScore,a.ordScore]};
   return 'KTC3-'+btoa(unescape(encodeURIComponent(JSON.stringify(o))));
 }
 function renderResult(a){
@@ -787,32 +791,72 @@ function decodeCode(c){
   try{ const o=JSON.parse(decodeURIComponent(escape(atob(c.replace(/^KTC3-/,''))))); if(o && typeof o.sc==='number' && o.nm) return o; }catch(e){}
   return null;
 }
+/* ===== โหมดครู: รวมคะแนน + แยกปรนัย/อัตนัย (รหัสรุ่นใหม่มีฟิลด์ m=[ปรนัย,แยกประเภท,เรียงลำดับ]; รหัสเก่าที่ไม่มี m ยังอ่านได้ แสดง – ในช่องแยก) ===== */
+let tView='all';
+const MC_MAX=MC.length*MC_POINT, SUBJ_MAX=MAX_SCORE-MC.length*MC_POINT;
+const HAS_CLS=(typeof USE_CLASSIFY==='undefined')?true:USE_CLASSIFY, HAS_ORD=(typeof USE_ORDER==='undefined')?true:USE_ORDER;
+const CLS_MAX=HAS_CLS?CLASSIFY.items.length*CLS_POINT:0, ORD_MAX=HAS_ORD?ORDERQ.steps.length*ORD_POINT:0;
+const hasM=r=>Array.isArray(r.o.m)&&r.o.m.length===3;
+const fr=(v,mx)=>v==null?'–':(v+'/'+mx);
+const pcOf=(v,mx)=>(v==null||!mx)?'–':Math.round(v/mx*100);
+const avgOf=a=>a.length?a.reduce((s,x)=>s+x,0)/a.length:0;
 $('btnProc').onclick=()=>{
   const tokens=$('tCodes').value.split(/\s+/).filter(t=>t.startsWith('KTC3-'));
-  const list=store.get('kt3_teacher',[]); let add=0,dup=0,bad=0;
+  const list=store.get('kt3_teacher',[]); let add=0,dup=0,bad=0,upd=0;
   tokens.forEach(t=>{
     if(list.some(r=>r.code===t)){ dup++; return; }
     const o=decodeCode(t); if(!o){ bad++; return; }
+    const same=list.findIndex(r=>String(r.o.n)===String(o.n)&&r.o.nm===o.nm&&r.o.ts===o.ts); /* ครั้งสอบเดียวกัน */
+    if(same>=0){
+      if(Array.isArray(o.m)&&!hasM(list[same])){ list[same]={code:t,o:o,added:list[same].added}; upd++; } else dup++;
+      return;
+    }
     list.push({code:t,o:o,added:Date.now()+add}); add++;
   });
   store.set('kt3_teacher',list);
-  $('tMsg').textContent='เพิ่มใหม่ '+add+' รายการ · ซ้ำ '+dup+' · อ่านไม่ได้ '+bad;
+  $('tMsg').textContent='เพิ่มใหม่ '+add+' รายการ · อัปเดตเป็นแบบมีคะแนนแยก '+upd+' · ซ้ำ '+dup+' · อ่านไม่ได้ '+bad;
   $('tCodes').value=''; renderTeacher();
 };
 function teacherRows(){ return store.get('kt3_teacher',[]).slice().sort((a,b)=>(+a.o.n-+b.o.n)||(a.added-b.added)); }
 function renderTeacher(){
-  const rows=teacherRows(), t=$('tTable');
-  const n=rows.length, avg=n?(rows.reduce((s,r)=>s+r.o.sc,0)/n):0, pass=rows.filter(r=>r.o.ps).length;
-  const flagged=rows.filter(r=>r.o.v.reduce((x,y)=>x+y,0)>0).length;
-  $('tStats').innerHTML='<span class="pill">ส่งแล้ว '+n+' คน</span><span class="pill">เฉลี่ย '+avg.toFixed(1)+'/'+MAX_SCORE+'</span><span class="pill">ผ่าน '+pass+' คน</span><span class="pill watch-bad">มีการตรวจพบ '+flagged+' คน</span>';
-  t.innerHTML='<tr><th>เลขที่</th><th>ชื่อ</th><th>คะแนน</th><th>%</th><th>ผล</th><th>เวลา</th><th>ออกจอ</th><th>ทับ/แบ่งจอ</th><th>แคป</th><th>โหลดใหม่</th><th></th></tr>'+
-    rows.map(r=>'<tr><td>'+esc(r.o.n)+'</td><td>'+esc(r.o.nm)+'</td><td>'+r.o.sc+'/'+r.o.mx+'</td><td>'+r.o.pt+'</td><td>'+(r.o.ps?'ผ่าน':'ไม่ผ่าน')+(r.o.to?' (หมดเวลา)':'')+'</td><td>'+fmtSec(r.o.tm)+'</td>'+
-    '<td>'+r.o.v[0]+'</td><td>'+r.o.v[1]+'</td><td>'+r.o.v[2]+'</td><td>'+r.o.v[3]+'</td><td><button class="link" data-c="'+esc(r.code)+'">ลบ</button></td></tr>').join('');
+  const rows=teacherRows(), t=$('tTable'), n=rows.length;
+  const withM=rows.filter(hasM), noM=n-withM.length;
+  if(!SUBJ_MAX) tView=(tView==='sub')?'all':tView;
+  $('tSeg').style.display=SUBJ_MAX?'flex':'none';
+  $('tSeg').querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.v===tView));
+  const pass=rows.filter(r=>r.o.ps).length, flagged=rows.filter(r=>r.o.v.reduce((x,y)=>x+y,0)>0).length;
+  let chips='<span class="pill">ส่งแล้ว '+n+' คน</span><span class="pill">เฉลี่ยรวม '+avgOf(rows.map(r=>r.o.sc)).toFixed(1)+'/'+MAX_SCORE+'</span>';
+  if(withM.length){
+    if(SUBJ_MAX) chips+='<span class="pill">เฉลี่ยปรนัย '+avgOf(withM.map(r=>r.o.m[0])).toFixed(1)+'/'+MC_MAX+'</span><span class="pill">เฉลี่ยอัตนัย '+avgOf(withM.map(r=>r.o.m[1]+r.o.m[2])).toFixed(1)+'/'+SUBJ_MAX+'</span>';
+  }
+  chips+='<span class="pill">ผ่าน '+pass+' คน</span><span class="pill watch-bad">มีการตรวจพบ '+flagged+' คน</span>';
+  if(noM) chips+='<span class="pill watch-bad">รหัสแบบเก่า '+noM+' คน (ไม่มีคะแนนแยก)</span>';
+  $('tStats').innerHTML=chips;
+  const del=r=>'<td><button class="link" data-c="'+esc(r.code)+'">ลบ</button></td>';
+  const base=r=>'<td>'+esc(r.o.n)+'</td><td>'+esc(r.o.nm)+'</td>';
+  const mcv=r=>hasM(r)?r.o.m[0]:null, sbv=r=>hasM(r)?(r.o.m[1]+r.o.m[2]):null;
+  let head, body;
+  if(tView==='mc'){
+    head='<tr><th>เลขที่</th><th>ชื่อ</th><th>ปรนัย</th><th>% ปรนัย</th><th></th></tr>';
+    body=rows.map(r=>'<tr>'+base(r)+'<td>'+fr(mcv(r),MC_MAX)+'</td><td>'+pcOf(mcv(r),MC_MAX)+'</td>'+del(r)+'</tr>');
+  } else if(tView==='sub'){
+    head='<tr><th>เลขที่</th><th>ชื่อ</th>'+(HAS_CLS?'<th>แยกประเภท</th>':'')+(HAS_ORD?'<th>เรียงลำดับ</th>':'')+'<th>อัตนัยรวม</th><th>% อัตนัย</th><th></th></tr>';
+    body=rows.map(r=>'<tr>'+base(r)+(HAS_CLS?'<td>'+fr(hasM(r)?r.o.m[1]:null,CLS_MAX)+'</td>':'')+(HAS_ORD?'<td>'+fr(hasM(r)?r.o.m[2]:null,ORD_MAX)+'</td>':'')+
+      '<td>'+fr(sbv(r),SUBJ_MAX)+'</td><td>'+pcOf(sbv(r),SUBJ_MAX)+'</td>'+del(r)+'</tr>');
+  } else {
+    head='<tr><th>เลขที่</th><th>ชื่อ</th>'+(SUBJ_MAX?'<th>ปรนัย</th><th>อัตนัย</th>':'')+'<th>รวม</th><th>%</th><th>ผล</th><th>เวลา</th><th>ออกจอ</th><th>ทับ/แบ่งจอ</th><th>แคป</th><th>โหลดใหม่</th><th></th></tr>';
+    body=rows.map(r=>'<tr>'+base(r)+(SUBJ_MAX?'<td>'+fr(mcv(r),MC_MAX)+'</td><td>'+fr(sbv(r),SUBJ_MAX)+'</td>':'')+
+      '<td><b>'+r.o.sc+'/'+r.o.mx+'</b></td><td>'+r.o.pt+'</td><td>'+(r.o.ps?'ผ่าน':'ไม่ผ่าน')+(r.o.to?' (หมดเวลา)':'')+'</td><td>'+fmtSec(r.o.tm)+'</td>'+
+      '<td>'+r.o.v[0]+'</td><td>'+r.o.v[1]+'</td><td>'+r.o.v[2]+'</td><td>'+r.o.v[3]+'</td>'+del(r)+'</tr>');
+  }
+  t.innerHTML=head+body.join('');
   t.querySelectorAll('button[data-c]').forEach(b=>b.onclick=()=>{ store.set('kt3_teacher',store.get('kt3_teacher',[]).filter(r=>r.code!==b.dataset.c)); renderTeacher(); });
 }
+$('tSeg').querySelectorAll('button').forEach(b=>b.onclick=()=>{ tView=b.dataset.v; renderTeacher(); });
 $('btnCopyTb').onclick=()=>{
-  const head=['เลขที่','ชื่อ','คะแนน','เต็ม','เปอร์เซ็นต์','ผล','เวลา(วินาที)','หมดเวลา','ออกจากหน้าจอ','ทับ/แบ่งจอ','แคป','โหลดใหม่'].join('\t');
-  const body=teacherRows().map(r=>[r.o.n,r.o.nm,r.o.sc,r.o.mx,r.o.pt,r.o.ps?'ผ่าน':'ไม่ผ่าน',r.o.tm,r.o.to?'ใช่':'',r.o.v[0],r.o.v[1],r.o.v[2],r.o.v[3]].join('\t')).join('\n');
+  const head=['เลขที่','ชื่อ','ปรนัย(เต็ม '+MC_MAX+')','อัตนัย(เต็ม '+SUBJ_MAX+')','แยกประเภท','เรียงลำดับ','รวม','เต็ม','เปอร์เซ็นต์','ผล','เวลา(วินาที)','หมดเวลา','ออกจากหน้าจอ','ทับ/แบ่งจอ','แคป','โหลดใหม่'].join('\t');
+  const body=teacherRows().map(r=>{ const m=hasM(r);
+    return [r.o.n,r.o.nm,m?r.o.m[0]:'',m?(r.o.m[1]+r.o.m[2]):'',m?r.o.m[1]:'',m?r.o.m[2]:'',r.o.sc,r.o.mx,r.o.pt,r.o.ps?'ผ่าน':'ไม่ผ่าน',r.o.tm,r.o.to?'ใช่':'',r.o.v[0],r.o.v[1],r.o.v[2],r.o.v[3]].join('\t'); }).join('\n');
   copyText(head+'\n'+body,$('btnCopyTb'));
 };
 $('btnClearAll').onclick=()=>{
